@@ -1,0 +1,76 @@
+---
+title: 'DA Project, Phase 2: Some Preliminary Plots'
+author: "Behnaz Hosseini - 91100232"
+output: 
+  html_document:
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width='1000px', dpi=200)
+library(knitr)
+library(dplyr)
+library(magrittr)
+library(data.table)
+library(highcharter)
+library(ggplot2)
+
+options(scipen = 999)
+
+load("final_data.Rdata")
+```
+
+## How many times each hero was picked/banned
+```{r}
+all_picks = list()
+all_bans  = list()
+
+for (c in seq(3,length(picks_bans),by = 4)) {
+  p = picks_bans %>% filter(picks_bans[,c-1] == TRUE)
+  all_picks = append(all_picks,as.list(p[,c]))
+  
+  b = picks_bans %>% filter(picks_bans[,c-1] == FALSE)
+  all_bans  = append(all_bans,as.list(b[,c]))
+}
+
+all_picks = as.data.frame(transpose(all_picks))
+colnames(all_picks) = "hero_id"
+all_picks = all_picks %>% group_by(hero_id) %>% summarise(times_picked = sum(hero_id))
+  
+all_bans = as.data.frame(transpose(all_bans))
+colnames(all_bans) = "hero_id"
+all_bans = all_bans %>% group_by(hero_id) %>% summarise(times_banned = sum(hero_id))
+
+hero_names = heroes[c(1:112),] %>% select(hero_name = localized_name)
+m = merge(all_picks,all_bans) %>% arrange(hero_id)
+m[,1] = hero_names
+pb = melt(m,id.var = "hero_id") 
+pb %>% hchart(.,x = hero_id, y = value,group = variable, type = "column") %>% 
+  hc_title(text = "Times each hero was picked/banned")
+
+remove(p,b,c,hero_names,m,pb,all_bans,all_picks)
+```
+
+## Number of wins for Radiant and Dire team
+```{r}
+res = as.data.frame(table(matches_detail$radiant_win))
+colnames(res)[1] = "radiant_won"
+res %>% hchart(., x = radiant_won, y = Freq, color = radiant_won, type = "column") %>% 
+  hc_title(text = "Number of wins for Radiant and Dire team")
+
+remove(res)
+```
+
+## How many games each team has played as Radiant/Dire
+```{r}
+r = as.data.frame(table(matches_detail$radiant_name))
+colnames(r)[2] = "radiant_freq"
+d = as.data.frame(table(matches_detail$dire_name))
+colnames(d)[2] = "dire_freq"
+res = merge(r,d,by.all = r$Var1,all = T)
+colnames(res)[1] = "team_name"
+res = melt(res, id.var = "team_name")
+res %>% hchart(., x = team_name, y = value, group = variable, type = "column") %>% 
+  hc_title(text = "No. of games played as Radiant/Dire")
+
+remove(r,d,res)
+```

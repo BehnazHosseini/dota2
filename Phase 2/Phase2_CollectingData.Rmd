@@ -1,0 +1,228 @@
+---
+title: "DA Project, Phase 2: Collecting Data"
+author: "Behnaz Hosseini - 91100232"
+output: 
+  html_document:
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(dplyr)
+library(magrittr)
+library(data.table)
+library(RDota2)
+
+options(scipen = 999)
+```
+
+## Collecting Data
+Initially, I was going to scrape data from [DOTABUFF](https://www.dotabuff.com/), but it proved to be an arduous and buggy procedure. So with further research, I came across the official R Steam API client for Dota2, RDota2.  
+After the installtion, to use the package I needed a Steam Key, which I got from [Steam Community](https://steamcommunity.com/login/home/?goto=%2Fdev%2Fapikey) using my Steam account. (As the Key is confidential data, I ommited the Key registering procedure which was done using `key_actions()`)
+
+### Get league listing (version 6.88, 12/6/2016 - 11/12/2016)
+```{r, eval = FALSE}
+all_leagues = as.data.frame(get_league_listing()$content)
+
+pro_leagues = all_leagues %>%
+  filter(name %in%
+           c("The Boston Major 2016",
+             "Northern Arena BEAT Invitational presented by Bell",
+             "MarsTV Dota 2 League 2016",
+             "The International 2016",
+             "The Summit 5",
+             "Nanyang Championships Season 2",
+             "ESL One Frankfurt 2016",
+             "World Cyber Arena 2016 S1",
+             "World Cyber Arena 2016 S2",
+             "World Cyber Arena 2016 S3",
+             "ROG MASTERS 2016",
+             "Dota 2 Professional League 2016",
+             "Shanghai Dota2 Open S2",
+             "World Electronic Sports Games International",
+             "DOTA2 ACE Provisional",
+             "NEA2016")) %>%
+  select(name, leagueid)
+
+```
+
+```{r, eval = FALSE}
+matches = data.frame()
+for (l in 1:nrow(pro_leagues)) {
+  lid = pro_leagues[l,"leagueid"]
+  league_games = get_match_history(league_id = lid)
+  league_games = league_games$content
+  
+  tmp = data.frame()
+  for (m in 1:length(league_games$matches)) {
+    curr_match = league_games$matches[[m]]
+    if(curr_match$series_id != 0){
+      tmp = tmp %>% rbind(as.data.frame(curr_match))}
+  }
+  tmp = cbind(league_id = lid, tmp)
+  matches = matches %>% rbind(tmp)
+}
+
+remove(lid,league_games,l,curr_match,tmp,m)
+```
+
+### Init. for getting match details
+```{r, eval = FALSE}
+match_ids = matches$match_id
+gen_details_matches = data.frame(stringsAsFactors = F)
+pick_ban_matches = data.frame(stringsAsFactors = F)
+players_matches = data.frame(stringsAsFactors = F)
+to_be_del_matches = list()
+
+mis_team_id = data.frame()
+mis_team_id[1,1] = 3331948
+mis_team_id[1,2] = "LGD.Forever Young"
+mis_team_id[2,1] = 2856589
+mis_team_id[2,2] = "Valkyrie eSports"
+mis_team_id[3,1] = 3318843
+mis_team_id[3,2] = "LW"
+mis_team_id[4,1] = 3259967
+mis_team_id[4,2] = "BnB"
+mis_team_id[5,1] = 3321220
+mis_team_id[5,2] = "T Show"
+mis_team_id[6,1] = 3326680
+mis_team_id[6,2] = "Horde"
+mis_team_id[7,1] = 3336725
+mis_team_id[7,2] = "Rampage Gaming"
+colnames(mis_team_id) = c("id","name")
+```
+
+### Backup
+```{r, eval = FALSE}
+p = players_matches
+g = gen_details_matches
+ban = pick_ban_matches
+dl = to_be_del_matches
+
+```
+
+### Get Match Details
+```{r, eval = FALSE}
+nik = dim(matches)[1]
+ptm <- proc.time()
+for (m in 1701:nik) {
+  print(m)
+  
+  tmp = get_match_details(match_id = match_ids[[m]])$content
+  if(length(tmp) >= 30){
+    players_matches = bind_rows(as.data.frame(tmp[1],stringsAsFactors = F), players_matches)
+    
+    if(length(tmp) == 31){ # All Pick Mode
+      pb = transpose(as.data.frame(rep(NA,dim(pick_ban_matches)[2])))
+      colnames(pb) = colnames(pick_ban_matches)
+      pick_ban_matches = bind_rows(pb,pick_ban_matches)
+      
+      gen_details_matches = bind_rows(as.data.frame(tmp[2:31],stringsAsFactors = F),
+                                      gen_details_matches)
+      gen_details_matches[1,"radiant_captain"] = NA
+      gen_details_matches[1,"dire_captain"] = NA
+    } # end of All Pick Mode case
+    
+    else if(length(tmp) == 30 | length(tmp) == 33){ # missing radiant/dire data
+      d = transpose(as.data.frame(rep(NA,dim(gen_details_matches)[2])))
+      colnames(d) = colnames(gen_details_matches)
+        
+      if(is.null(tmp$dire_team_id)){ # missing dire data
+        d[1,c(1:26)] = as.data.frame(tmp[2:27],stringsAsFactors = F)
+        id = matches[m,"dire_team_id"]
+        team_info = get_team_info_by_team_id(id)$content
+        d[1,"dire_team_id"] = id
+        
+        if(length(team_info$teams) == 0){
+          d[1,"dire_name"] = mis_team_id[mis_team_id$id == id, "name"]
+          d[1,"dire_logo"] = NA
+        }
+        else{
+          d[1,"dire_name"] = team_info$teams[[1]]$name
+          d[1,"dire_logo"] = team_info$teams[[1]]$logo
+        }
+        d[1,"dire_team_complete"] = 1
+        
+        # d[1,c(31:32)] = as.data.frame(tmp[28:29],stringsAsFactors = F)
+      }
+      else if(is.null(tmp$radiant_team_id)){ # missing radiant data
+        d[1,c(1:22)] = as.data.frame(tmp[2:23],stringsAsFactors = F)
+        id = matches[m,"radiant_team_id"]
+        team_info = get_team_info_by_team_id(id)$content
+        d[1,"radiant_team_id"] = id
+        
+        if(length(team_info$teams) == 0){
+          d[1,"radiant_name"] = mis_team_id[mis_team_id$id == id, "name"]
+          d[1,"radiant_logo"] = NA
+        }
+        else{
+          team_info = get_team_info_by_team_id(id)$content
+          d[1,"radiant_name"] = team_info$teams[[1]]$name
+          d[1,"radiant_logo"] = team_info$teams[[1]]$logo
+        }
+        d[1,"radiant_team_complete"] = 1
+        
+        d[1,c(27:30)] = as.data.frame(tmp[24:27],stringsAsFactors = F)
+      }
+      
+      d[1,"radiant_captain"] = tmp$radiant_captain
+      d[1,"dire_captain"] = tmp$dire_captain
+      gen_details_matches = bind_rows(d,gen_details_matches)
+      pick_ban_matches  = bind_rows(as.data.frame(tmp[30],stringsAsFactors = F), pick_ban_matches)
+    } # end of missing data case
+    else{ # all normal
+    gen_details_matches = bind_rows(as.data.frame(tmp[2:33],stringsAsFactors = F),
+                                    gen_details_matches)
+    pick_ban_matches  = bind_rows(as.data.frame(tmp[34],stringsAsFactors = F), pick_ban_matches)
+    }
+  } # end of length(tmp) >= 30
+  else{ # too much missing data
+    to_be_del_matches = append(m,to_be_del_matches)
+  }
+}
+
+proc.time() - ptm
+
+```
+
+### Restore
+```{r, eval = FALSE}
+players_matches = p
+gen_details_matches = g
+pick_ban_matches = ban
+to_be_del_matches = dl
+```
+
+### Arrange df, remove unwanted variables, add match_id col
+```{r, eval = FALSE}
+matches_detail = arrange(gen_details_matches,-row_number())
+picks_bans     = arrange(pick_ban_matches,-row_number())
+players_detail = arrange(players_matches,-row_number())
+
+# rm(list=setdiff(ls(), c("all_leagues","pro_leagues","matches","matches_detail",
+                        # "picks_bans","players_detail","tbd")))
+
+picks_bans = cbind(match_id = matches_detail$match_id,picks_bans)
+players_detail = cbind(match_id = matches_detail$match_id,players_detail)
+```
+
+### Clean matches df up
+```{r, eval = FALSE}
+tbd = data.frame()
+for (i in 1:length(to_be_del_matches)) {
+tbd[i,1] = matches[to_be_del_matches[[i]], "match_id"]
+}
+
+matches = matches %>% filter(!(match_id %in% tbd$V1))
+
+matches_detail[,c(33:36)] = NULL
+picks_bans[,c(82,83)] = NULL
+```
+
+### Get Heroes and Items data
+```{r, eval = FALSE}
+items = as.data.frame(get_game_items()$content)
+heroes = as.data.frame(get_heroes()$content) %>% arrange(id)
+```
+
+
