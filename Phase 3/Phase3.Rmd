@@ -1,0 +1,1105 @@
+---
+title: 'DA Project, Phase 3'
+author: "Behnaz Hosseini - 91100232"
+output: 
+  html_document:
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width='1000px', dpi=200)
+library(knitr)
+library(dplyr)
+library(magrittr)
+library(data.table)
+library(highcharter)
+library(ggplot2)
+library(rvest)
+
+options(scipen = 999)
+
+load("final_data.Rdata")
+
+```
+
+**Most DotA 2 terms definitions and game mechanics descriptions are taken from http://dota2.gamepedia.com**
+
+
+# Pick and Ban
+Pick and ban phase is the first and the most important phase of a DotA match. There are different game modes with different mechanisms for picking and banning heroes, but Captains Mode is the standard format for tournament games.  
+
+The captain bans certain heroes, preventing either team from picking the hero. The captain also chooses five heroes for their team. After the captains choose five heroes, each player chooses a hero from their captain's selections. 30 seconds are allotted for bans, and 30 seconds for picks. Each captain has 130 seconds total bonus time that can be used throughout any selection. If time runs out during a ban selection, no hero will be banned; if time runs out during a pick selection, a random hero will be chosen. In Unranked matchmaking, The player that clicks the "become captain" button first is the captain.
+  
+  
+## How many times each hero was picked/banned
+```{r}
+all_picks = list()
+all_bans  = list()
+
+for (c in seq(3,length(picks_bans),by = 4)) {
+  p = picks_bans %>% filter(picks_bans[,c-1] == TRUE)
+  all_picks = append(all_picks,as.list(p[,c]))
+  
+  b = picks_bans %>% filter(picks_bans[,c-1] == FALSE)
+  all_bans  = append(all_bans,as.list(b[,c]))
+}
+
+all_picks = as.data.frame(transpose(all_picks))
+colnames(all_picks) = "hero_id"
+all_picks = all_picks %>% group_by(hero_id) %>% summarise(times_picked = sum(hero_id))
+  
+all_bans = as.data.frame(transpose(all_bans))
+colnames(all_bans) = "hero_id"
+all_bans = all_bans %>% group_by(hero_id) %>% summarise(times_banned = sum(hero_id))
+
+hero_names = heroes[c(1:112),] %>% select(hero_name = localized_name)
+m = merge(all_picks,all_bans) %>% arrange(hero_id)
+m[,1] = hero_names
+pb = melt(m,id.var = "hero_id") 
+pb %>% hchart(.,type = "column", hcaes(x = hero_id, y = value,group = variable)) %>% 
+  hc_title(text = "Times each hero was picked/banned")
+
+```
+
+### Top 10 most picked heroes
+```{r}
+most_picked = all_picks %>% arrange(-times_picked) %>% .[1:10,] %>%
+  `colnames<-`(c("id","times_picked")) %>% merge(.,heroes, by = "id") %>%
+  select_(.dots = c("localized_name","times_picked")) %>% arrange(-times_picked)
+
+colnames(most_picked)[1] = "Hero_Name"
+
+most_picked %>% hchart(.,type = "column", hcaes(x = Hero_Name, y = times_picked)) %>% 
+  hc_title(text = "Top 10 most picked heroes") %>% 
+  hc_colors("forestgreen")
+```
+
+### Top 10 most banned heroes
+```{r}
+most_banned = all_bans %>% arrange(-times_banned) %>% .[1:10,] %>%
+  `colnames<-`(c("id","times_banned")) %>% merge(.,heroes, by = "id") %>%
+  select_(.dots = c("id","localized_name","times_banned")) %>% arrange(-times_banned)
+
+colnames(most_banned)[2] = "Hero_Name"
+
+most_banned %>% select_(.dots = c("Hero_Name","times_banned")) %>% 
+  hchart(.,type = "column", hcaes(x = Hero_Name, y = times_banned)) %>% 
+  hc_title(text = "Top 10 most banned heroes") %>% 
+  hc_colors("#CD5555")
+```
+
+## Game result when top 10 most banned heroes are picked
+Supposedly, most banned heroes must be the dangerous ones!  
+They might be too strong or the opponents can play the hero too well; so the other team bans these heroes.  
+I expect that if team *A* has more of these banned heroes than team *B*, the match between these teams should result in a win for *A*.
+
+```{r}
+cols = c("match_id",
+         "players.hero_id","players.hero_id.1","players.hero_id.2","players.hero_id.3",
+         "players.hero_id.4","players.hero_id.5","players.hero_id.6","players.hero_id.7",
+         "players.hero_id.8","players.hero_id.9")
+
+matches_heroes = matches %>% select_(.dots = cols) %>%
+  merge(., matches_detail[,c("match_id","radiant_win")], by = "match_id") %>%
+  filter(players.hero_id != 0) %>% mutate(mbp_r = 0, mbp_d = 0)
+
+w1mostban = data.frame()
+for(m in 1:nrow(matches_heroes)){
+  if(length(setdiff(as.numeric(matches_heroes[m,2:6]),most_banned$id)) == 4){
+    # radiant has picked exactly one of the most banned heroes
+    matches_heroes[m,"mbp_r"] = 1
+  }
+  else if(length(setdiff(as.numeric(matches_heroes[m,2:6]),most_banned$id)) == 3){
+    matches_heroes[m,"mbp_r"] = 2
+  }
+  else if(length(setdiff(as.numeric(matches_heroes[m,2:6]),most_banned$id)) == 2){
+    matches_heroes[m,"mbp_r"] = 3
+  }
+
+  #############################################
+  if(length(setdiff(as.numeric(matches_heroes[m,7:11]),most_banned$id)) == 4){
+    # radiant has picked exactly one of the most banned heroes
+    matches_heroes[m,"mbp_d"] = 1
+  }
+  else if(length(setdiff(as.numeric(matches_heroes[m,7:11]),most_banned$id)) == 3){
+    matches_heroes[m,"mbp_d"] = 2
+  }
+  else if(length(setdiff(as.numeric(matches_heroes[m,7:11]),most_banned$id)) == 2){
+    matches_heroes[m,"mbp_d"] = 3
+  }
+}
+
+prdict = matches_heroes %>% select(12,13,14) %>% filter(mbp_r != mbp_d) %>%
+  mutate(match_result = "", expectation = "")
+
+for(i in 1:nrow(prdict)){
+  if(prdict[i,"radiant_win"])
+    prdict[i,"match_result"] = "radiant win"
+  else
+    prdict[i,"match_result"] = "dire win"
+
+
+  if(prdict[i,"mbp_r"] > prdict[i,"mbp_d"])
+    prdict[i,"expectation"] = "radiant win"
+
+  else
+    prdict[i,"expectation"] = "dire win"
+}
+
+prdict %>% select(-c(1)) %>% group_by(match_result, expectation) %>% summarise(n = n()) %>% 
+  hchart(., type = "column", hcaes(x = expectation, y = n, group = match_result)) %>% 
+  hc_tooltip(., pointFormat = "n: {point.y} <br>
+             Match Result, Expectation: {point.name} <br>
+             Match Result, Reality: {series.name}") %>% 
+  hc_title(text = "Expectation vs. real match results")
+
+```
+
+My expectation matched the reality more often than not; the number of times which my hypothesis proved me wrong is close to times it was right, though.
+
+
+
+# Radiant and Dire
+## Number of wins for Radiant and Dire team
+The Radiant is a faction in Dota 2. It is characterized by a bright, natural theme. The bottom left half of the game map belongs to the Radiant, while the top right belongs to the Dire, which is characterized by a dark, gloomy theme.  
+  
+Every match is radiant vs. dire, each team having five heroes.
+
+Does playing as radiant/dire have an impact on the match result?
+
+```{r}
+res = as.data.frame(table(matches_detail$radiant_win))
+colnames(res)[1] = "radiant_won"
+res %>% hchart(., type = "column", colorByPoint = T, hcaes(x = radiant_won, y = Freq)) %>% 
+  hc_title(text = "Number of wins for Radiant and Dire team") %>% 
+  hc_colors(c("firebrick","darkgreen"))
+
+kruskal.test(res$radiant_won ~ res$Freq)
+remove(res)
+```
+
+As p-value is greater that 0.1, there is little or no evidence against the null hypothesis of winning and the side you play on being independent.
+
+## How many games each team has played as Radiant/Dire
+```{r}
+r = as.data.frame(table(matches_detail$radiant_name))
+colnames(r)[2] = "radiant_freq"
+d = as.data.frame(table(matches_detail$dire_name))
+colnames(d)[2] = "dire_freq"
+res = merge(r,d,by.all = r$Var1,all = T)
+colnames(res)[1] = "team_name"
+res = melt(res, id.var = "team_name")
+res %>% hchart(., type = "column", hcaes(x = team_name, y = value, group = variable)) %>% 
+  hc_title(text = "No. of games played as Radiant/Dire")
+
+
+
+remove(r,d,res)
+```
+
+## How many matches each team played (Top 15 teams)
+```{r}
+tmp = append(sapply(matches_detail$radiant_name, as.character),
+             sapply(matches_detail$dire_name, as.character)) %>%
+  as.data.frame(., stringsAsFactors = F) %>% `colnames<-`("Team_Name")
+
+top15mostMatches = tmp %>% group_by(Team_Name) %>% summarise(Times_Played = n()) %>%
+  arrange(-Times_Played) %>% .[1:15,]
+
+top15mostMatches %>% 
+  hchart(., type = "column", hcaes(x = Team_Name, y = Times_Played)) %>% 
+  hc_title(text = "Top 15 teams by No. of matches played") %>% 
+  hc_tooltip(pointFormat = "Matches Played: {point.y}")
+
+```
+
+## How did those top 15 teams perform as radiant/dire?
+Do some teams play better as dire/radiant?
+
+```{r}
+tmp = matches_detail %>% select_(.dots = c("radiant_win","radiant_name")) %>% 
+filter(radiant_name %in% top15mostMatches$Team_Name)
+
+as_rad_wins = tmp %>% 
+  filter(radiant_win == T) %>% 
+  group_by(radiant_win, radiant_name) %>% summarise(wins_as_radiant = n())
+
+as_rad_losses = tmp %>% 
+  filter(radiant_win == F) %>% 
+  group_by(radiant_win, radiant_name) %>% summarise(losses_as_radiant = n())
+
+
+tmp = matches_detail %>% select_(.dots = c("radiant_win","dire_name")) %>% 
+  filter(dire_name %in% top15mostMatches$Team_Name)
+  
+as_dire_wins = tmp %>%
+  filter(radiant_win == T) %>% 
+  group_by(radiant_win, dire_name) %>% summarise(wins_as_dire = n())
+
+as_dire_losses = tmp %>%
+  filter(radiant_win == F) %>% 
+  group_by(radiant_win, dire_name) %>% summarise(losses_as_dire = n())
+
+r_wl = merge(as_rad_wins,as_rad_losses, by = "radiant_name")
+colnames(r_wl)[1] = "Team_Name"
+  
+d_wl = merge(as_dire_wins,as_dire_losses, by = "dire_name")
+colnames(d_wl)[1] = "Team_Name"
+
+rd_wl = merge(r_wl, d_wl, by = "Team_Name") %>% select(c(1,3,5,7,9))
+
+rd_wl %>% melt(.,id.vars = "Team_Name") %>% 
+  hchart(.,type = "column", hcaes(x = Team_Name, y = value, group = variable)) %>% 
+  hc_title(text = "Win/Loss stats for top 15 teams playing as Radiant or Dire")
+
+```
+
+Seems so! As the plots tell us, for example team *Newbee* have had most of their losses when played as dire, or *The Wings Gaming* won matches mostly when they were radiant.
+
+
+
+
+# Attributes
+Attributes are the main statistics of all heroes that independently determine most scaling statistics. These attributes are strength, agility, and intelligence.  
+
+Every hero has a primary attribute, which controls his or her attack damage. Usually, a hero's primary attribute will determine how he or she is played. For example, intelligence heroes are typically more dependent on abilities. A hero's primary attribute typically grows faster than the other two attributes.
+
+* Strength is a measure of a hero's toughness and endurance. Strength determines a hero's maximum health and health regeneration. Heroes with strength as their primary attribute can be hard to kill, so they will often take initiator and tank roles, initiating fights and taking most of the damage from enemy attacks.  
+
+* Agility is a measure of a hero's swiftness and dexterity. Agility determines a hero's armor and attack speed. Heroes with agility as their primary attribute tend to be more dependent on their auto-attacks and items, and are usually capable of falling back on their abilities in a pinch. Agility heroes often take carry and Gank roles.  
+
+* Intelligence is a measure of a hero's wit and wisdom. Intelligence determines a hero's maximum mana, mana regeneration and spell damage. Heroes with intelligence as their primary attribute tend to rely on their abilities to deal damage or help others. Intelligence heroes often take support, gank, and pusher roles.
+
+
+## Adding attributes to Heroes data
+```{r}
+strength_heroes = "http://dota2.gamepedia.com/Strength" %>% read_html() %>%
+  html_table(fill=T) %>% .[[1]] %>% as.data.frame(.) %>% select(Hero) %>%
+  filter(!(Hero %in% .[grep("/",.$Hero),])) %>% mutate(attribute = "strength")
+
+agility_heroes = "http://dota2.gamepedia.com/Agility" %>% read_html() %>%
+  html_table(fill=T) %>% .[[1]] %>% as.data.frame(.) %>% select(Hero) %>%
+  filter(!(Hero %in% .[grep("/",.$Hero),])) %>% mutate(attribute = "agility")
+
+intelligence_heroes = "http://dota2.gamepedia.com/Intelligence" %>% read_html() %>%
+  html_table(fill=T) %>% .[[1]] %>% as.data.frame(.) %>% select(Hero) %>%
+  filter(!(Hero %in% .[grep("/",.$Hero),])) %>% mutate(attribute = "intelligence")
+
+attr = data.frame()
+attr = attr %>% bind_rows(strength_heroes, agility_heroes, intelligence_heroes)
+
+colnames(attr)[1] = "localized_name"
+heroes = merge(heroes, attr, by = "localized_name") %>% arrange(.,id)
+
+remove(strength_heroes,agility_heroes,intelligence_heroes,attr)
+```
+
+
+
+## Hero attributes in won and lost games
+```{r}
+match_res = matches_detail %>% select(match_id,radiant_win)
+matches = merge(match_res, matches, by = "match_id")
+remove(match_res)
+
+won_heroes = data.frame()
+lost_heroes = data.frame()
+tmp_matches = matches %>% select(c(1,2,13,16,19,22,25,28,31,34,37,40))
+tmp_matches = tmp_matches[-c(which(apply(tmp_matches, 1, function(r) any(r == 0)))),]
+
+for(m in 1:nrow(tmp_matches)){
+  if(tmp_matches[m,"radiant_win"]){
+    tmp = tmp_matches[m,c(1,3:7)] %>% mutate(res = "win")
+    colnames(tmp) = c("match_id","hero1","hero2","hero3","hero4","hero5","res")
+    won_heroes = tmp %>% bind_rows(.,won_heroes)
+    
+    tmp = tmp_matches[m,c(1,8:12)] %>% mutate(res = "lose")
+    colnames(tmp) = c("match_id","hero1","hero2","hero3","hero4","hero5","res")
+    lost_heroes = tmp %>% bind_rows(.,lost_heroes)
+  }
+  else{
+    tmp = tmp_matches[m,c(1,8:12)] %>% mutate(res = "win")
+    colnames(tmp) = c("match_id","hero1","hero2","hero3","hero4","hero5","res")
+    won_heroes = tmp %>% bind_rows(.,won_heroes)
+    
+    tmp = tmp_matches[m,c(1,3:7)] %>% mutate(res = "lose")
+    colnames(tmp) = c("match_id","hero1","hero2","hero3","hero4","hero5","res")
+    lost_heroes = tmp %>% bind_rows(.,lost_heroes)
+  }
+}
+
+match_heroes = bind_rows(won_heroes,lost_heroes)
+
+won_heroes = won_heroes %>% select(-c(1,7)) %>% 
+  melt(.) %>% select(value) %>% `colnames<-`("id")
+won_heroes = merge(won_heroes,heroes, by = "id") %>% mutate(res = "win")
+
+lost_heroes = lost_heroes %>% select(-c(1,7)) %>%
+  melt(.) %>% select(value) %>% `colnames<-`("id")
+lost_heroes = merge(lost_heroes,heroes, by = "id") %>% mutate(res = "lose")
+```
+
+## How many times each hero of a certain attribute was picked in won games?
+```{r}
+won_heroes %>% group_by(localized_name,attribute) %>%
+  summarise(times_picked = n()) %>%
+  hchart(., type = "column", hcaes(x = attribute, y = times_picked, group = localized_name)) %>% 
+  hc_title(text = "Times each hero was picked in won games") %>% 
+  hc_legend(., enabled = F)
+```
+
+## How many times each hero of a certain attribute was picked in lost games?
+```{r}
+lost_heroes %>% group_by(localized_name,attribute) %>%
+  summarise(times_picked = n()) %>%
+  hchart(., type = "column", hcaes(x = attribute, y = times_picked, group = localized_name)) %>%
+  hc_title(text = "Times each hero was picked in lost games") %>% 
+  hc_legend(., enabled = F)
+```
+
+## Number of times each hero of a certain attribute was picked in won/lost games
+```{r}
+d = won_heroes %>% bind_rows(lost_heroes)
+d = d[,-c(1,3)]
+d = d %>% group_by(localized_name,attribute,res) %>% summarise(times_picked = n())
+
+d %>% hchart(.,type = "column",stacking = "normal",
+             hcaes(x = localized_name, y = times_picked, group = attribute, stack = res)) %>%
+  hc_tooltip(., pointFormat = "Times Picked: {point.y} <br>
+             Game Result: {point.stack}")
+```
+
+## Top 5 most picked heroes in won/lost games of each attribute
+```{r}
+w = d %>% filter(res == "win") %>% group_by(attribute) %>% arrange(desc(times_picked)) 
+w_a = w %>% filter(attribute == "agility") %>% .[1:5,]
+w_i = w %>% filter(attribute == "intelligence") %>% .[1:5,]
+w_s = w %>% filter(attribute == "strength") %>% .[1:5,]
+
+l = d %>% filter(res == "lose")%>% group_by(attribute) %>% arrange(desc(times_picked))
+l_a = l %>% filter(attribute == "agility") %>% .[1:5,]
+l_i = l %>% filter(attribute == "intelligence") %>% .[1:5,]
+l_s = l %>% filter(attribute == "strength") %>% .[1:5,]
+
+bind_rows(w_a,l_a,w_i,l_i,w_s,l_s) %>% 
+  hchart(.,type = "column", stacking = "normal",
+         hcaes(x = attribute, y = times_picked, group = localized_name, stack = res)) %>%
+  hc_tooltip(., pointFormat = "Times Picked: {point.y} <br>
+             Game Result: {point.res} <br>
+             Hero Name: {point.localized_name}") %>% 
+  hc_legend(.,enabled = F) %>% 
+  hc_title(text = "Top 5 most picked heroes in won/lost games")
+
+remove(w_a,l_a,w_i,l_i,w_s,l_s,w,l)
+```
+
+
+## Number of attributes in won/lost games
+```{r}
+d %>% group_by(attribute,res) %>% summarise(n = sum(times_picked)) %>% 
+  hchart(., type = "column", hcaes(.,x = attribute, y = n, group = res)) %>% 
+  hc_title(., text = "Number of attributes in won/lost games")
+```
+
+
+## Are the number of heroes with each ability affect match result?
+$H_0$: Winning or losing a game is independent from number of heroes with a specific attribute.
+```{r}
+attr_matches = melt(match_heroes,id.vars = c("match_id","res")) %>% select(-c(3))
+colnames(attr_matches)[3] = "id"
+attr_matches = merge(attr_matches,heroes,by = "id")
+
+test_data = table(attr_matches$res,attr_matches$attribute)
+kable(test_data)
+chisq.test(test_data)
+```
+  
+As p-value is between 0.05 and 0.1, there is weak evidence against the null hypothesis.  
+
+```{r}
+tmp = attr_matches %>% group_by(res,attribute,match_id) %>% summarise(NO_each_attr = n())
+
+attr_mean = tmp %>% group_by(res,attribute) %>% summarise(mean = mean(NO_each_attr))
+
+kable(attr_mean)
+
+remove(tmp,attr_mean)
+```
+
+With a quick look at the above table, we can see that on average winners have had more agility and intelligence heroes and less strength heroes in their teams than the losers.
+
+
+
+
+# Buildings
+Buildings are special units that are immune to most spells, use structure armor, and are immobile. Destroying a building rewards you with a bounty, similar to most creeps or heroes. Destroying towers rewards the entire team. Buildings are divided into several categories, each with their own role; towers, ancients and barracks are the three types of building which we have their data in out sets.  
+
+## Barracks
+Barracks are special buildings, defended by tier 3 towers, that are responsible for keeping lane creeps as powerful as their counterparts. There are two Barracks for each lane per faction - one for melee creeps, and one for ranged creeps. Destroying either Barracks provides a large boost to the destroying team's associated lane creeps, increasing their statistics, as well as reducing the gold and experience they give when killed.  
+
+Barracks are invulnerable until the tower that is guarding them is destroyed.  
+
+We want to check the average percentage of the barracks remaining at the end of the game, in lost and won games.
+
+```{r}
+number2binary = function(number, noBits) {
+       binary_vector = rev(as.numeric(intToBits(number)))
+       if(missing(noBits)) {
+          return(binary_vector)
+       } else {
+          binary_vector[-(1:(length(binary_vector) - noBits))]
+       }
+}
+
+win_barracks = data.frame()
+lose_barracks = data.frame()
+tmp_matches = matches_detail %>% select(c(1,9,10))
+
+for(m in 1:nrow(tmp_matches)){
+  if(tmp_matches[m,"radiant_win"]){
+    wb = number2binary(tmp_matches[m,"barracks_status_radiant"],6)
+    wb = as.data.frame(as.list(wb)) %>%
+      `colnames<-`(c("bottom_ranged", "bottom_melee", "middle_ranged",
+                     "middle_melee", "top_ranged", "top_melee"))
+    win_barracks = bind_rows(wb, win_barracks)
+
+    lb = number2binary(tmp_matches[m,"barracks_status_dire"],6)
+    lb = as.data.frame(as.list(lb)) %>%
+      `colnames<-`(c("bottom_ranged", "bottom_melee", "middle_ranged",
+                     "middle_melee", "top_ranged", "top_melee"))
+    lose_barracks = bind_rows(lb, lose_barracks)
+  }
+  else{
+    wb = number2binary(tmp_matches[m,"barracks_status_dire"],6)
+    wb = as.data.frame(as.list(wb)) %>%
+      `colnames<-`(c("bottom_ranged", "bottom_melee", "middle_ranged",
+                     "middle_melee", "top_ranged", "top_melee"))
+    win_barracks = bind_rows(wb, win_barracks)
+
+    lb = number2binary(tmp_matches[m,"barracks_status_radiant"],6)
+    lb = as.data.frame(as.list(lb)) %>%
+      `colnames<-`(c("bottom_ranged", "bottom_melee", "middle_ranged",
+                     "middle_melee", "top_ranged", "top_melee"))
+    lose_barracks = bind_rows(lb, lose_barracks)
+  }
+}
+remove(wb,lb)
+
+win_bar_stat = win_barracks %>% colMeans(.) %>% as.data.frame(.) %>% transpose(.) %>% 
+  `colnames<-`(c("bottom_ranged", "bottom_melee", "middle_ranged",
+                   "middle_melee", "top_ranged", "top_melee")) %>% mutate(res = "win")
+
+win_bar_stat[-c(ncol(win_bar_stat))] = win_bar_stat[-c(ncol(win_bar_stat))] * 100
+
+loss_bar_stat = lose_barracks %>% colMeans(.) %>% as.data.frame(.) %>% transpose(.) %>% 
+  `colnames<-`(c("bottom_ranged", "bottom_melee", "middle_ranged",
+                   "middle_melee", "top_ranged", "top_melee")) %>% mutate(res = "loss")
+
+loss_bar_stat[-c(ncol(loss_bar_stat))] = loss_bar_stat[-c(ncol(loss_bar_stat))] * 100
+
+bar_stat_all = bind_rows(win_bar_stat,loss_bar_stat) %>% melt(.,id.vars = "res")
+
+bar_stat_all %>% hchart(.,type = "column", hcaes(x = variable, y = value, group = res)) %>%
+  hc_title(text = "Avg % of barracks remaining at the end of game")
+```
+  
+As it's obvious from the chart, winners have more barracks left than the losers at the end of the game.
+
+
+## Towers
+Each faction's three lanes are guarded by 3 towers, and their Ancient guarded by 2 neighboring towers. There are 4 different levels of towers:
+
+* Tier 1 towers, the weakest towers, located at the tip of each lane.  
+
+* Tier 2 towers, noticeably stronger and tankier than tier 1 towers, located halfway through each lane.  
+
+* Tier 3 towers, stronger than tier 2 towers, located at the 3 ramps on each base.  
+
+* Tier 4 towers, tankier than tier 3 towers, 2 towers located in front of each Ancient.  
+
+Every tower, except for tier 1 towers, is invulnerable until the tower preceding it is destroyed. The two towers defending a team's Ancient become vulnerable if any tier 3 tower is destroyed. 
+
+Ancients are massive structures found inside each faction's base. Both of the tier 4 towers must be destroyed in order to remove the Ancient's invulnerability.  
+In order to win, each team must destroy the enemy team's Ancient. Ancients have no offensive abilities themselves, but are guarded by 2 towers. They cannot be attacked until both towers are destroyed.
+
+```{r}
+towers_list = c("ancient_top_tower", "ancient_bottom_tower", "bottom_tier_3", 
+           "bottom_tier_2", "bottom_tier_1", "middle_tier_3", "middle_tier_2", 
+           "middle_tier_1", "top_tier_3", "top_tier_2", "top_tier_1")
+win_towers = data.frame()
+lose_towers = data.frame()
+tmp_matches = matches_detail %>% select(c(1,7,8))
+
+for(m in 1:nrow(tmp_matches)){
+  if(tmp_matches[m,"radiant_win"]){
+    wt = number2binary(tmp_matches[m,"tower_status_radiant"],11)
+    wt = as.data.frame(as.list(wt)) %>% `colnames<-`(towers_list)
+    win_towers = bind_rows(wt, win_towers)
+
+    lt = number2binary(tmp_matches[m,"tower_status_dire"],11)
+    lt = as.data.frame(as.list(lt)) %>% `colnames<-`(towers_list)
+    lose_towers = bind_rows(lt, lose_towers)
+  }
+  else{
+    wt = number2binary(tmp_matches[m,"tower_status_dire"],11)
+    wt = as.data.frame(as.list(wt)) %>%
+      `colnames<-`(towers_list)
+    win_towers = bind_rows(wt, win_towers)
+
+    lt = number2binary(tmp_matches[m,"tower_status_radiant"],11)
+    lt = as.data.frame(as.list(lt)) %>%
+      `colnames<-`(towers_list)
+    lose_towers = bind_rows(lt, lose_towers)
+  }
+}
+remove(wt,lt)
+
+win_tower_stat = win_towers %>% colSums(.) %>% as.data.frame(.) %>% transpose(.) %>%
+  `colnames<-`(towers_list) %>% mutate(res = "win")
+
+lose_tower_stat = lose_towers %>% colSums(.) %>% as.data.frame(.) %>% transpose(.) %>%
+  `colnames<-`(towers_list) %>% mutate(res = "lose")
+
+tower_stat_all = bind_rows(win_tower_stat,lose_tower_stat) %>% melt(.,id.vars = "res")
+
+tower_stat_all %>% hchart(.,type = "column", hcaes(x = variable, y = value, group = res)) %>%
+  hc_title(text = "NO. of towers remaining at the end of game")
+
+```
+
+
+# Gold
+Gold is the currency used to buy items or instantly revive your hero, so it's one of the most important elements (after pick and ban) in determining the result of a game.  
+Gold can be earned from killing heroes, creeps, or destroying buildings.
+
+A player's gold is split into two categories:
+
+* Reliable gold - Any bounty you get from hero kills, Roshan, couriers, Hand of Midas, Track gold and global gold from towers is added to your reliable gold pool.  
+
+* Unreliable gold - Everything else (starting gold, periodic gold, creep kills, neutrals, etc).
+
+## Gold per minute
+Gold per minute (gpm for short) is the amount of gold a hero earns in each minute.
+
+How big a difference does more gpm really make?
+Let's calculate sum of gpm for all five heroes of each team, and then take the mean value of these sums across all games for wins and losses.
+
+```{r}
+players_detail2 = merge(matches[,c("match_id","radiant_win")], players_detail, by = "match_id")
+
+radiant_cols_gold = c("players.gold_per_min","players.gold_per_min.1","players.gold_per_min.2",
+                   "players.gold_per_min.3","players.gold_per_min.4")
+dire_cols_gold = c("players.gold_per_min.5","players.gold_per_min.6","players.gold_per_min.7",
+                   "players.gold_per_min.8","players.gold_per_min.9")
+  
+gpm_all = players_detail2 %>%
+  select_(.dots = c("match_id", "radiant_win", radiant_cols_gold, dire_cols_gold))
+
+r_sum = list()
+d_sum = list()
+for(m in 1:nrow(gpm_all)){
+ r_sum = append(r_sum, rowSums(gpm_all[m,3:7]))
+ d_sum = append(d_sum, rowSums(gpm_all[m,8:12]))
+}
+
+r_sum = transpose(as.data.frame(r_sum)) %>% `colnames<-`("gpm_r_sum")
+d_sum = transpose(as.data.frame(d_sum)) %>% `colnames<-`("gpm_d_sum")
+
+gpm_all = gpm_all %>% bind_cols(.,r_sum,d_sum)
+
+tmp = gpm_all %>% select(radiant_win, gpm_r_sum, gpm_d_sum) %>% group_by(radiant_win) %>% 
+  summarise(mean_gpm_radiant = mean(gpm_r_sum),mean_gpm_dire = mean(gpm_d_sum)) %>%
+  mutate(res = c("dire_win","radiant_win"))
+
+tmp$radiant_win = NULL
+
+tmp %>% melt(.,id.vars = "res") %>%
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable)) %>% 
+  hc_title(text = "Mean sum of gpm five heroes of a team by match result") %>% 
+  hc_colors(., c("gold","lightseagreen"))
+
+```
+  
+The above chart suggests that [on average] the team which earns more gpm will be the winner.  
+Let's put this hypothesis to test.
+
+## $H_0$: Result of the match is independent from sum of gold per minute for each team.
+```{r}
+kruskal.test(radiant_win ~ gpm_d_sum, data = gpm_all)
+kruskal.test(radiant_win ~ gpm_r_sum, data = gpm_all)
+```
+
+The very small p-values suggest that there is very strong evidence against $H_0$.  
+So more gold per minute means the team is gonna win.  
+  
+  
+# Experience
+Experience allows heroes to level up, which makes them stronger and allows them to learn new abilities; so it's one of the most important elements (after pick and ban) in determining the result of a game.  
+Experience is earned by being within a 1300 range radius of a dying enemy unit. Also, some items award a hero with experience.  
+It takes increasingly more experience to level up as a hero's level progresses.
+
+## Experience per minute
+Experience per minute (xpm for short) is the amount of experience a hero earns in each minute.
+
+How big a difference does more xpm really make?
+Let's calculate sum of xpm for all five heroes of each team, and then take the mean value of these sums across all games for wins and losses.
+```{r}
+radiant_cols_exp = c("players.xp_per_min","players.xp_per_min.1","players.xp_per_min.2",
+                   "players.xp_per_min.3","players.xp_per_min.4")
+dire_cols_exp = c("players.xp_per_min.5","players.xp_per_min.6","players.xp_per_min.7",
+                   "players.xp_per_min.8","players.xp_per_min.9")
+  
+xpm_all = players_detail2 %>%
+  select_(.dots = c("match_id", "radiant_win", radiant_cols_exp, dire_cols_exp))
+
+r_sum = list()
+d_sum = list()
+for(m in 1:nrow(xpm_all)){
+ r_sum = append(r_sum, rowSums(xpm_all[m,3:7]))
+ d_sum = append(d_sum, rowSums(xpm_all[m,8:12]))
+}
+
+r_sum = transpose(as.data.frame(r_sum)) %>% `colnames<-`("xpm_r_sum")
+d_sum = transpose(as.data.frame(d_sum)) %>% `colnames<-`("xpm_d_sum")
+
+xpm_all = xpm_all %>% bind_cols(.,r_sum,d_sum)
+
+tmp = xpm_all %>% select(radiant_win, xpm_r_sum, xpm_d_sum) %>% group_by(radiant_win) %>%
+  summarise(mean_xpm_radiant = mean(xpm_r_sum),mean_xpm_dire = mean(xpm_d_sum)) %>%
+  mutate(res = c("dire_win","radiant_win"))
+
+tmp$radiant_win = NULL
+
+tmp %>% melt(.,id.vars = "res") %>%
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable)) %>%
+  hc_title(text = "Mean sum of xpm five heroes of a team by match result") %>% 
+  hc_colors(., c("gold","lightseagreen"))
+
+```
+
+The above chart suggests that [on average] the team which earns more gold per minute will be the winner.  
+Let's put this hypothesis to test.
+
+## $H_0$: Result of the match is independent from sum of experience per minute for each team.
+```{r}
+kruskal.test(radiant_win ~ xpm_d_sum, data = xpm_all)
+kruskal.test(radiant_win ~ xpm_r_sum, data = xpm_all)
+```
+
+The very small p-values suggest that there is very strong evidence against $H_0$.  
+So more experience per minute means the team is gonna win.  
+  
+
+
+
+# Kills
+## Sum of kills for each team
+```{r}
+radiant_cols_kills = c("players.kills","players.kills.1","players.kills.2",
+                   "players.kills.3","players.kills.4")
+dire_cols_kills = c("players.kills.5","players.kills.6","players.kills.7",
+                   "players.kills.8","players.kills.9")
+  
+kills_all = players_detail2 %>%
+  select_(.dots = c("match_id", "radiant_win", radiant_cols_kills, dire_cols_kills))
+
+r_sum = list()
+d_sum = list()
+for(m in 1:nrow(kills_all)){
+ r_sum = append(r_sum, rowSums(kills_all[m,3:7]))
+ d_sum = append(d_sum, rowSums(kills_all[m,8:12]))
+}
+
+r_sum = transpose(as.data.frame(r_sum)) %>% `colnames<-`("kills_r_sum")
+d_sum = transpose(as.data.frame(d_sum)) %>% `colnames<-`("kills_d_sum")
+
+kills_all = kills_all %>% bind_cols(.,r_sum,d_sum)
+
+tmp = kills_all %>% select(radiant_win, kills_r_sum, kills_d_sum) %>% group_by(radiant_win) %>%
+  summarise(mean_kills_radiant = mean(kills_r_sum),mean_kills_dire = mean(kills_d_sum)) %>%
+  mutate(res = c("dire_win","radiant_win"))
+
+tmp$radiant_win = NULL
+
+tmp %>% melt(.,id.vars = "res") %>%
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable)) %>%
+  hc_title(text = "Mean sum of kills five heroes of a team by match result") %>% 
+  hc_colors(., c("gold","lightseagreen"))
+
+```
+
+The above chart suggests that [on average] the team which kills more will be the winner.  
+Let's put this hypothesis to test.
+
+## $H_0$: Result of the match is independent from sum of kills for each team.
+```{r}
+kruskal.test(radiant_win ~ kills_d_sum, data = kills_all)
+kruskal.test(radiant_win ~ kills_r_sum, data = kills_all)
+```
+
+The very small p-values suggest that there is very strong evidence against $H_0$.  
+So more kills means the team is gonna win.  
+  
+  
+  
+# Deaths
+## Sum of deaths for each team
+```{r}
+radiant_cols_deaths = c("players.deaths","players.deaths.1","players.deaths.2",
+                   "players.deaths.3","players.deaths.4")
+dire_cols_deaths = c("players.deaths.5","players.deaths.6","players.deaths.7",
+                   "players.deaths.8","players.deaths.9")
+
+deaths_all = players_detail2 %>%
+  select_(.dots = c("match_id", "radiant_win", radiant_cols_deaths, dire_cols_deaths))
+
+r_sum = list()
+d_sum = list()
+for(m in 1:nrow(deaths_all)){
+ r_sum = append(r_sum, rowSums(deaths_all[m,3:7]))
+ d_sum = append(d_sum, rowSums(deaths_all[m,8:12]))
+}
+
+r_sum = transpose(as.data.frame(r_sum)) %>% `colnames<-`("deaths_r_sum")
+d_sum = transpose(as.data.frame(d_sum)) %>% `colnames<-`("deaths_d_sum")
+
+deaths_all = deaths_all %>% bind_cols(.,r_sum,d_sum)
+
+tmp = deaths_all %>% select(radiant_win, deaths_r_sum, deaths_d_sum) %>% group_by(radiant_win) %>%
+  summarise(mean_deaths_radiant = mean(deaths_r_sum),mean_deaths_dire = mean(deaths_d_sum)) %>%
+  mutate(res = c("dire_win","radiant_win"))
+
+tmp$radiant_win = NULL
+
+tmp %>% melt(.,id.vars = "res") %>%
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable)) %>%
+  hc_title(text = "Mean sum of deaths five heroes of a team by match result") %>% 
+  hc_colors(., c("gold","lightseagreen"))
+
+```
+
+The above chart suggests that [on average] the team with more deaths will be the winner. It makes sense, because every time a hero is killed, she/he loses some reliable gold and it takes some time (depending on level of the hero and some items she/he might have) to respawn.  
+
+Let's put this hypothesis to test.
+
+## $H_0$: Result of the match is independent from sum of deaths for each team.
+```{r}
+kruskal.test(radiant_win ~ deaths_d_sum, data = deaths_all)
+kruskal.test(radiant_win ~ deaths_r_sum, data = deaths_all)
+```
+
+The very small p-values suggest that there is very strong evidence against $H_0$.  
+So more deaths means the team is gonna win. 
+
+
+# Exceptions
+## The team had more kills, but lost the game
+```{r}
+excep_mID = kills_all %>%
+  filter((radiant_win & kills_r_sum < kills_d_sum) | 
+           (!radiant_win & kills_d_sum < kills_r_sum)) %>% select(match_id)
+
+cols = c("radiant_win",
+         "gpm_r_sum", "gpm_d_sum",
+         "xpm_r_sum", "xpm_d_sum",
+         "kills_r_sum", "kills_d_sum",
+         "deaths_r_sum", "deaths_d_sum")
+
+excep = gpm_all %>% merge(., xpm_all[, -c(2)], by = "match_id") %>%
+  merge(., kills_all[, -c(2)], by = "match_id") %>%
+  merge(., deaths_all[, -c(2)], by = "match_id") %>% 
+  filter(match_id %in% excep_mID$match_id) %>% select_(.dots = cols)
+
+excep = excep %>% mutate(res = ifelse(radiant_win,"radiant_win","dire_win"))
+excep$radiant_win = NULL
+
+tmp = excep %>% group_by(res) %>%
+  summarise(gpm_r_sum = mean(gpm_r_sum), gpm_d_sum = mean(gpm_d_sum),
+            xpm_r_sum = mean(xpm_r_sum), xpm_d_sum = mean(xpm_d_sum),
+            kills_r_sum = mean(kills_r_sum), kills_d_sum = mean(kills_d_sum),
+            deaths_r_sum = mean(deaths_r_sum), deaths_d_sum = mean(deaths_d_sum)) 
+
+tmp %>% melt(., id.vars = "res") %>% 
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable)) %>% 
+  hc_title(text = "More kills but lost; other stats")
+
+kable(tmp)
+
+```
+
+In this case, we can see that the winner had a bigger gpm and xpm; so in order to win, first and foremost you need to try and gain more gold and experience per minute.
+
+## The team has more deaths, but won the game
+```{r}
+excep_mID = deaths_all %>%
+  filter((radiant_win & deaths_r_sum > deaths_d_sum) | 
+           (!radiant_win & deaths_d_sum > deaths_r_sum)) %>% select(match_id)
+
+cols = c("radiant_win",
+         "gpm_r_sum", "gpm_d_sum",
+         "xpm_r_sum", "xpm_d_sum",
+         "kills_r_sum", "kills_d_sum",
+         "deaths_r_sum", "deaths_d_sum")
+
+excep = gpm_all %>% merge(., xpm_all[, -c(2)], by = "match_id") %>%
+  merge(., kills_all[, -c(2)], by = "match_id") %>%
+  merge(., deaths_all[, -c(2)], by = "match_id") %>% 
+  filter(match_id %in% excep_mID$match_id) %>% select_(.dots = cols)
+
+excep = excep %>% mutate(res = ifelse(radiant_win,"radiant_win","dire_win"))
+excep$radiant_win = NULL
+
+tmp = excep %>% group_by(res) %>%
+  summarise(gpm_r_sum = mean(gpm_r_sum), gpm_d_sum = mean(gpm_d_sum),
+            xpm_r_sum = mean(xpm_r_sum), xpm_d_sum = mean(xpm_d_sum),
+            kills_r_sum = mean(kills_r_sum), kills_d_sum = mean(kills_d_sum),
+            deaths_r_sum = mean(deaths_r_sum), deaths_d_sum = mean(deaths_d_sum)) 
+
+tmp %>% melt(., id.vars = "res") %>% 
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable))%>% 
+  hc_title(text = "More deaths but won; other stats")
+
+kable(tmp)
+```
+
+In this case, we can see that the winner had a bigger gpm and xpm.  
+
+So maybe if we want to arrange stats according to their importance and impact on match result:
+gpm, xpm > kills, deaths
+
+
+
+# Assists
+All allied heroes that are in a 1300 radius of a killed enemy including the killer (within 20 seconds of the last damage dealt to that killed enemy), is granted a certain amount of reliable gold and experience, depending on the amount of allied heroes in that area. Note that the assist counter on the scoreboard only counts assists if you dealt damage or applied a debuff to killed enemy, or if you applied a buff to the killer, but gold and experience are awarded independently of your "assist" counter.
+
+## Sum of assists for each team by match result
+```{r}
+radiant_cols_assists = c("players.assists","players.assists.1","players.assists.2",
+                   "players.assists.3","players.assists.4")
+dire_cols_assists = c("players.assists.5","players.assists.6","players.assists.7",
+                   "players.assists.8","players.assists.9")
+
+assists_all = players_detail2 %>%
+  select_(.dots = c("match_id", "radiant_win", radiant_cols_assists, dire_cols_assists))
+
+r_sum = list()
+d_sum = list()
+for(m in 1:nrow(assists_all)){
+ r_sum = append(r_sum, rowSums(assists_all[m,3:7]))
+ d_sum = append(d_sum, rowSums(assists_all[m,8:12]))
+}
+
+r_sum = transpose(as.data.frame(r_sum)) %>% `colnames<-`("assists_r_sum")
+d_sum = transpose(as.data.frame(d_sum)) %>% `colnames<-`("assists_d_sum")
+
+assists_all = assists_all %>% bind_cols(.,r_sum,d_sum)
+
+tmp = assists_all %>% select(radiant_win, assists_r_sum, assists_d_sum) %>%
+  group_by(radiant_win) %>%
+  summarise(mean_assists_radiant = mean(assists_r_sum),
+            mean_assists_dire = mean(assists_d_sum)) %>%
+  mutate(res = c("dire_win","radiant_win"))
+
+tmp$radiant_win = NULL
+
+tmp %>% melt(.,id.vars = "res") %>%
+  hchart(., type = "column", hcaes(x = res, y = value, group = variable)) %>% 
+  hc_title(text = "Mean sum of assists five heroes of a team by match result") %>%
+  hc_colors(., c("gold","lightseagreen"))
+
+```
+
+# Summons
+Summons are a type of units that are created with spells. Players do not encounter them, unless they play as, with or against certain heroes. Summons are usually under the control of the summoning unit's player, but most of them can be converted by the enemy. Only very few of them cannot be controlled. Summoned units usually live only for a certain amount of time (although some stay permanently, until killed) after being summoned and a player can have a limited amount of some summons.  
+
+There are 3 types of summons:   
+* Regular summons, which are treated like regular creeps by spells, usually have no active abilities and usually are not a big threat.  
+
+* Creep-heroes, which are treated like heroes by most spells and are significantly stronger than other summons.  
+
+* Wards, which usually are immobile and fully immune to most spells.  
+
+## Impact of summons on match duration for *Chen* and *Enchatress*
+```{r}
+cols = c("match_id","radiant_win",
+         "players.hero_id","players.hero_id.1","players.hero_id.2","players.hero_id.3",
+         "players.hero_id.4","players.hero_id.5","players.hero_id.6","players.hero_id.7",
+         "players.hero_id.8","players.hero_id.9")
+
+mwsummon = matches %>% select_(.dots = cols) %>% mutate(had_hero = "")
+mwsummon = matches_detail %>% select_(.dots = c("match_id","duration")) %>% 
+  merge(mwsummon, ., by = "match_id")
+
+heroes_id = heroes %>% filter(localized_name %in% c("Chen", "Enchantress")) %>% select(id)
+
+for(m in 1:nrow(mwsummon)){
+  if(any(mwsummon[m,3:12] %in% transpose(heroes_id))){
+    mwsummon[m,"had_hero"] = "Yes"
+  }   
+  else
+    mwsummon[m,"had_hero"] ="No"
+}
+
+mwsummon %>% group_by(had_hero) %>%
+  summarise(mean_duration = mean(duration)) %>% as.data.frame(.) %>% 
+  hchart(.,type = "column", hcaes(x = had_hero, y = mean_duration)) %>% 
+  hc_title(text = "Impact of summons on mean duration")
+
+```
+
+Based on observations, I suspected that the match duration will be shorter if *Chen* or *Enchantress* are picked in a team; which we can see to be true to a degree, but there is not a huge difference between match duration in games with or without these two heroes.
+
+## Impact of summons on tower status
+*Lone Druid*, *Enigma*, *Enchantress* and *Warlock* have summons which help with taking down the towers more quickly and/or more easily.
+
+```{r}
+cols = c("match_id",
+         "players.hero_id","players.hero_id.1","players.hero_id.2","players.hero_id.3",
+         "players.hero_id.4","players.hero_id.5","players.hero_id.6","players.hero_id.7",
+         "players.hero_id.8","players.hero_id.9")
+
+mwsummon = matches %>% select_(.dots = cols) %>% mutate(had_hero = "") %>%
+  filter(players.hero_id != 0)
+
+tbd = which(matches[,"players.hero_id"] == 0)
+
+heroes_id = heroes %>%
+  filter(localized_name %in% c("Lone Druid", "Enigma", "Chen", "Enchantress", "Warlock")) %>%
+  select(id)
+
+for(m in 1:nrow(mwsummon)){
+  if(any(mwsummon[m,2:11] %in% transpose(heroes_id))){
+    mwsummon[m,"had_hero"] = "Yes"
+  }
+  else
+    mwsummon[m,"had_hero"] = "No"
+}
+
+mwsummon = mwsummon %>% select_(.dots = c("match_id","had_hero"))
+
+towers_list_r = c("ancient_top_tower_r", "ancient_bottom_tower_r", "bottom_tier_3_r",
+           "bottom_tier_2_r", "bottom_tier_1_r", "middle_tier_3_r", "middle_tier_2_r",
+           "middle_tier_1_r", "top_tier_3_r", "top_tier_2_r", "top_tier_1_r")
+
+towers_list_d = c("ancient_top_tower_d", "ancient_bottom_tower_d", "bottom_tier_3_d",
+           "bottom_tier_2_d", "bottom_tier_1_d", "middle_tier_3_d", "middle_tier_2_d",
+           "middle_tier_1_d", "top_tier_3_d", "top_tier_2_d", "top_tier_1_d")
+
+tmp_matches = matches_detail %>% select(c(1,7,8,5))
+tmp_matches = tmp_matches[! tmp_matches %in% tbd]
+
+towers_stat = data.frame()
+for(m in 1:nrow(tmp_matches)){
+  r = number2binary(tmp_matches[m,"tower_status_radiant"],11)
+  r = as.data.frame(append(tmp_matches[m,"match_id"],as.list(r))) %>%
+    `colnames<-`(c("match_id",towers_list_r))
+
+  d = number2binary(tmp_matches[m,"tower_status_dire"],11)
+  d = as.data.frame(as.list(d)) %>% `colnames<-`(c(towers_list_d)) %>% bind_cols(r,.)
+
+  towers_stat = bind_rows(towers_stat, d)
+}
+
+towers_stat = merge(towers_stat,mwsummon,by = "match_id") %>% select(-c(1))
+
+nyesno = towers_stat %>% group_by(had_hero) %>% summarise(n = n()) %>% as.data.frame(.)
+
+tmpyes = towers_stat %>% filter(had_hero == "Yes") %>% select(-c(ncol(.))) %>%
+  colSums(.) %>% as.data.frame(.) %>% transpose(.) %>%
+  `colnames<-`(c(towers_list_r,towers_list_d)) %>% mutate(had_hero = "Yes")
+
+tmpyes[,-c(ncol(tmpyes))] = tmpyes[,-c(ncol(tmpyes))] / nyesno[nyesno$had_hero == "Yes","n"]
+
+tmpno = towers_stat %>% filter(had_hero == "No") %>% select(-c(ncol(.))) %>%
+  colSums(.) %>% as.data.frame(.) %>% transpose(.) %>%
+  `colnames<-`(c(towers_list_r,towers_list_d)) %>% mutate(had_hero = "No")
+
+tmpno[,-c(ncol(tmpno))] = tmpno[,-c(ncol(tmpno))] / nyesno[nyesno$had_hero == "No","n"]
+
+bind_rows(tmpyes,tmpno) %>%
+  select(1,12,2,13,3,14,4,15,5,16,6,17,7,18,8,19,9,20,10,21,11,22,23) %>%
+  melt(.,id.vars = "had_hero") %>% 
+  hchart(.,type = "column", hcaes(x = variable, y = value, group = had_hero)) %>% 
+  hc_title(text = "Impact of summons on tower status")
+
+```
+
+Like the previous case, personal observations were proved to be *not so true and accurate*, as towers status at the end of the game in matches with or without those named heroes are not very much different.
+
+
+
+# Match result prediction
+I sampled $\frac{3}{4}$ of data for learning, and the remaining $\frac{1}{4}$ for testing.
+
+```{r}
+cols = c("radiant_win",
+         "gpm_r_sum", "gpm_d_sum",
+         "xpm_r_sum", "xpm_d_sum",
+         "kills_r_sum", "kills_d_sum",
+         "deaths_r_sum", "deaths_d_sum")
+
+all_stats = gpm_all %>% merge(., xpm_all[, -c(2)], by = "match_id") %>%
+  merge(., kills_all[, -c(2)], by = "match_id") %>%
+  merge(., deaths_all[, -c(2)], by = "match_id") %>%
+  select_(.dots = cols)
+
+library(car)
+
+scatterplotMatrix(all_stats[,],
+                  spread=FALSE, smoother.args=list(lty=2),
+                  main="Scatter Plot Matrix")
+
+library(ggcorrplot)
+corr = cor(all_stats)
+ggcorrplot(corr,type = "lower")
+
+
+rand = sample(nrow(all_stats), nrow(all_stats) / 4)
+
+test = all_stats[rand, ]
+learn = all_stats[-c(rand), ]
+fit = glm(data = learn, formula = radiant_win ~ .)
+fit
+predicted = predict(fit, newdata = test)
+b = (predicted - test$radiant_win) ^ 2
+b = b[!is.na(b)]
+sum(b) / length(b)
+
+pred_rounded = predicted
+pred_rounded[predicted < 0.5] = 0
+pred_rounded[predicted >= 0.5] = 1
+df = data.frame(x = pred_rounded, y = test$radiant_win)
+df.summary = df %>% group_by(x) %>% summarize(ymin = min(y), ymax = max(y), ymean = mean(y))
+
+ggplot(df.summary, aes(x = x, y = ymean)) +
+    geom_point(size = 2) +
+    geom_errorbar(aes(ymin = ymin, ymax = ymax))
+```
+
+Our model could predict almost perfectly the match results!
+
+
+
+# Tips, tricks and final words
+I won't be exaggerating if I say that DotA 2 is the new chess! You need to have strategy, think carefully before making a decision (and make it quick!), be able to fool your opponent and make sacrifices when needed.  
+
+Just like any other real world game, there is an element of luck in DotA 2, so in my humble opinion, finding a sure-footed winning strategy is not an easy task at all, if not impossible! But there are tips and tricks I deduced doing this project, which may prove useful for beginners to delve into the world of DotA, or for professionals to see that personal observations aren't necessarily all the truth there is.
+
+**DotA Players Out There!**
+
+* Pick/Ban wisely, but don't be afraid not to ban some of the most banned heroes; as you can see, having one, two or even three of these heroes won't necessarily result in a win.
+
+* Don't put a jinx on Radiant/Dire; being on either side doesn't necesserily mean your team is gonna be the loser.
+
+* One strength hero is enough to have in your team, as teams with more strengh heroes had less winrates comparing to the others.
+
+* Do your best to earn as much gold and experience as possible; gpm and xpm are very important factors in determining the winner.
+
+* If you have more deaths than your opponent, don't see everything lost yet! Try to earn more gold and experience and you may win.
+
+* Killed the hell out of the opponent heroes? It doesn't necessarily mean you're gonna win the match, unless you are as keen on earning gold and experience.
+
+* Check the Summons section of this project!
+
+Play, experiment, have fun and don't believe the so called *facts* unless they're backed up with data science, because they might be just based on personal observations of some players.
+
+**Thank you for making it aaaall the way down here! :)**
